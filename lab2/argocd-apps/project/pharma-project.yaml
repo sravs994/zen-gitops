@@ -20,6 +20,7 @@ spec:
     - server: https://kubernetes.default.svc
       namespace: argocd
 
+  # Wide for lab environment — restrict to specific resource kinds in production
   clusterResourceWhitelist:
     - group: "*"
       kind: "*"
@@ -28,8 +29,9 @@ spec:
     - group: "*"
       kind: "*"
 
+  # warn: true surfaces resources created outside GitOps — useful for learning
   orphanedResources:
-    warn: false
+    warn: true
 
   roles:
     - name: pharma-admin
@@ -37,4 +39,5 @@ spec:
       policies:
         - p, proj:pharma:pharma-admin, applications, *, pharma/*, allow
       groups:
+        # Requires OIDC/SSO configured — this group assignment is inert in a local lab
         - pharma-devops-team
