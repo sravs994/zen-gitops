@@ -1,6 +1,6 @@
 # Session 1 Lab Guide — Deploy Zen Pharma Platform Manually
 
-**Prerequisites:** Your EKS cluster is up and `kubectl` is configured against it.
+**Prerequisites:** Your EKS cluster is up and `kubectl` is configured against it. Your RDS instance must be provisioned via `zen-infra` before starting — the services will fail to start without a reachable database.
 
 Verify before starting:
 ```bash
@@ -9,6 +9,40 @@ kubectl get nodes
 ```
 
 You should see your nodes in `Ready` state. If not, fix your kubeconfig before continuing.
+
+---
+
+## Before You Deploy — Set Your RDS Endpoint
+
+Every service that connects to the database reads `DB_HOST` from its ConfigMap. The manifests in `lab1/` contain a placeholder endpoint that **must be replaced** with your own RDS address before you apply anything.
+
+**Get your RDS endpoint:**
+```bash
+export DB_HOST=$(aws rds describe-db-instances \
+  --query 'DBInstances[?DBInstanceIdentifier==`pharma-dev-postgres`].Endpoint.Address' \
+  --output text)
+echo $DB_HOST
+# Expected: pharma-dev-postgres.<unique-id>.us-east-1.rds.amazonaws.com
+```
+
+**Replace the endpoint in all manifests:**
+```bash
+# macOS
+find lab1/ -name "*.yaml" -exec \
+  sed -i '' "s|DB_HOST:.*rds\.amazonaws\.com|DB_HOST: $DB_HOST|g" {} +
+
+# Linux / Cloud9
+find lab1/ -name "*.yaml" -exec \
+  sed -i "s|DB_HOST:.*rds\.amazonaws\.com|DB_HOST: $DB_HOST|g" {} +
+```
+
+**Verify the replacement:**
+```bash
+grep "DB_HOST" lab1/*.yaml
+# Every line should show your actual RDS endpoint, not a stale one
+```
+
+> **Why this matters:** If the endpoint is wrong, all database-dependent services will fail on startup with `UnknownHostException`. The pods will enter `CrashLoopBackOff`. The fix is always to update the ConfigMap and restart the deployment — not to touch the application code.
 
 ---
 
@@ -82,17 +116,28 @@ kubectl get rolebinding pharma-deployer-binding -n dev
 
 Secrets must exist **before** pods start. Pods that reference a missing secret will fail immediately with `CreateContainerConfigError`.
 
+Use the credentials that match your RDS instance. The username is whatever you configured when provisioning via `zen-infra` (default: `pharmaadmin`). Get the password from AWS Secrets Manager or your Terraform outputs.
+
 ```bash
-# Database credentials — used by 7 of the 9 services
+# Database credentials — used by 7 of the 9 services.
+# The secret needs both DB_* and SPRING_DATASOURCE_* keys because
+# different services reference different variable names.
 kubectl create secret generic db-credentials \
-  --from-literal=DB_USERNAME=pharma_user \
-  --from-literal=DB_PASSWORD=pharmaPass123 \
+  --from-literal=DB_USERNAME=pharmaadmin \
+  --from-literal=DB_PASSWORD=<YOUR_DB_PASSWORD> \
+  --from-literal=SPRING_DATASOURCE_USERNAME=pharmaadmin \
+  --from-literal=SPRING_DATASOURCE_PASSWORD=<YOUR_DB_PASSWORD> \
   -n dev
 
 # JWT signing key — used by auth-service and api-gateway
 kubectl create secret generic jwt-secret \
   --from-literal=JWT_SECRET=mysupersecretjwtkey256bitslongkey \
   -n dev
+```
+
+Or run the provided script (edit it with your password first):
+```bash
+bash lab1/02-create-secrets.sh
 ```
 
 Verify:
@@ -103,7 +148,7 @@ kubectl get secrets -n dev
 Expected output:
 ```
 NAME             TYPE     DATA   AGE
-db-credentials   Opaque   2      5s
+db-credentials   Opaque   4      5s
 jwt-secret       Opaque   1      3s
 ```
 
@@ -153,7 +198,7 @@ Check the logs:
 kubectl logs -l app=auth-service -n dev
 ```
 
-> **Expected:** The pod will be `Running` but may show `0/1 READY` if it cannot reach the RDS database. This is intentional — the readiness probe checks `/actuator/health/readiness` which returns `DOWN` when the database is unreachable. The pod gets no traffic until the probe passes. We will revisit this in Session 3 when we wire up secrets from AWS Secrets Manager.
+> **Expected:** If you completed the "Before You Deploy" step and created secrets correctly, the pod should reach `1/1 Running` within 60-90 seconds (Flyway runs DB migrations on startup). If it stays at `0/1` or goes into `CrashLoopBackOff`, see the troubleshooting section at the bottom of this guide.
 
 Test the health endpoint from inside the pod:
 ```bash
@@ -268,6 +313,65 @@ Now imagine doing this for **qa** and **prod** as well — with different image 
 That is 9 services × 3 environments = **27 deployments**, all maintained by hand, with no audit trail, no rollback, and no guarantee that dev and prod configs match.
 
 This is exactly the problem that **Helm + ArgoCD** solves in Session 2.
+
+---
+
+## Troubleshooting
+
+### Pods in CrashLoopBackOff — `UnknownHostException`
+
+**Symptom:** Pods crash immediately with this in the logs:
+```
+Caused by: java.net.UnknownHostException: pharma-dev-postgres.<id>.us-east-1.rds.amazonaws.com
+```
+
+**Cause:** The `DB_HOST` in the ConfigMap points to a stale or wrong RDS endpoint.
+
+**Fix:**
+```bash
+# 1. Get the correct endpoint
+export DB_HOST=$(aws rds describe-db-instances \
+  --query 'DBInstances[?DBInstanceIdentifier==`pharma-dev-postgres`].Endpoint.Address' \
+  --output text)
+
+# 2. Re-apply the manifests (after updating DB_HOST in the files — see "Before You Deploy")
+kubectl apply -f lab1/auth-service.yaml   # repeat for each affected service
+
+# 3. Restart the pods to pick up the new ConfigMap
+kubectl rollout restart deployment/auth-service -n dev
+# Replace auth-service with whichever service is crashing
+```
+
+### Pods in ImagePullBackOff
+
+**Symptom:** Events show `failed to pull image ... not found`
+
+**Cause:** The image tag in the manifest doesn't exist in ECR. The tag may have been built and pushed under a different SHA.
+
+**Fix:** Update the `image:` field in the relevant YAML file to a tag that exists in your ECR repository, then re-apply.
+
+```bash
+# List available tags for a service
+aws ecr describe-images \
+  --repository-name auth-service \
+  --query 'sort_by(imageDetails,&imagePushedAt)[-5:].imageTags' \
+  --output table
+```
+
+### New pods Pending — insufficient resources
+
+**Symptom:** New pods stay in `Pending`. Events show: `0/N nodes are available: Insufficient memory` or `Too many pods`.
+
+**Cause:** During a rolling update, both old and new pods exist simultaneously. If the cluster is near capacity, new pods can't be scheduled.
+
+**Fix:** Delete the old crashing pods to free capacity. Kubernetes will not restart them if a healthy replacement is already running.
+```bash
+# List old pods (look for ones with high RESTARTS or CrashLoopBackOff)
+kubectl get pods -n dev
+
+# Delete the stuck old pods by name
+kubectl delete pod <pod-name> -n dev
+```
 
 ---
 

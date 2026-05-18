@@ -4,10 +4,14 @@
 # In Session 3, External Secrets Operator will replace this manual step.
 
 # db-credentials — used by auth-service, api-gateway, catalog, inventory,
-#                  manufacturing, notification, and supplier services
+#                  manufacturing, notification, and supplier services.
+# The secret must include both DB_* and SPRING_DATASOURCE_* keys because
+# different services reference different variable names.
 kubectl create secret generic db-credentials \
-  --from-literal=DB_USERNAME=pharma_user \
-  --from-literal=DB_PASSWORD=pharmaPass123 \
+  --from-literal=DB_USERNAME=pharmaadmin \
+  --from-literal=DB_PASSWORD=<YOUR_DB_PASSWORD> \
+  --from-literal=SPRING_DATASOURCE_USERNAME=pharmaadmin \
+  --from-literal=SPRING_DATASOURCE_PASSWORD=<YOUR_DB_PASSWORD> \
   -n dev
 
 # jwt-secret — used by auth-service and api-gateway

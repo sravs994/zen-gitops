@@ -13,6 +13,41 @@ All three must exist. If not, complete Lab 1 first.
 
 ---
 
+## Before You Deploy — Set Your RDS Endpoint
+
+The raw manifests in `lab2/manifests/` contain a `DB_HOST` configmap entry that must match **your** RDS instance. This is the same step as Lab 1 — if your RDS was reprovisioned since Lab 1 (or you are starting fresh), re-run it.
+
+```bash
+export DB_HOST=$(aws rds describe-db-instances \
+  --query 'DBInstances[?DBInstanceIdentifier==`pharma-dev-postgres`].Endpoint.Address' \
+  --output text)
+echo $DB_HOST
+
+# macOS
+find lab2/manifests/ -name "configmap.yaml" -exec \
+  sed -i '' "s|DB_HOST:.*rds\.amazonaws\.com|DB_HOST: $DB_HOST|g" {} +
+
+# Linux / Cloud9
+find lab2/manifests/ -name "configmap.yaml" -exec \
+  sed -i "s|DB_HOST:.*rds\.amazonaws\.com|DB_HOST: $DB_HOST|g" {} +
+```
+
+Verify:
+```bash
+grep "DB_HOST" lab2/manifests/*/configmap.yaml
+```
+
+Commit the changes so ArgoCD picks them up when it clones your fork:
+```bash
+git add lab2/manifests/
+git commit -m "lab2: set RDS endpoint for my environment"
+git push
+```
+
+> **Why this step exists:** ArgoCD applies what is in Git — not what is in your cluster. If the endpoint in the manifest files is wrong, ArgoCD will keep applying the broken ConfigMap and your pods will keep crashing even after you fix the cluster manually.
+
+---
+
 # Part 1 — Day 2: ArgoCD with Raw Manifests
 
 ## What We Are Building
@@ -279,7 +314,7 @@ argocd app list
 kubectl get pods -n dev -w
 ```
 
-Wait for all pods to reach `1/1 Running`. Some services take longer (catalog, inventory, manufacturing, supplier need 90 seconds for Flyway DB migrations).
+Wait for all pods to reach `1/1 Running`. Services that connect to the database (auth, catalog, inventory, manufacturing, supplier, notification) need 60-90 seconds for Flyway DB migrations on first start. If any pod stays in `CrashLoopBackOff`, check that `DB_HOST` in its ConfigMap matches your RDS endpoint — see the "Before You Deploy" section above.
 
 ---
 

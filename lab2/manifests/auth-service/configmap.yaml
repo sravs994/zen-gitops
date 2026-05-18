@@ -5,7 +5,7 @@ metadata:
   namespace: dev
 data:
   SPRING_PROFILES_ACTIVE: dev
-  DB_HOST: pharma-dev-postgres.cs3c424yurej.us-east-1.rds.amazonaws.com
+  DB_HOST: pharma-dev-postgres.cyrywaguk6v4.us-east-1.rds.amazonaws.com
   LOG_LEVEL: DEBUG
   SERVER_PORT: "8081"
   TOKEN_EXPIRATION_MS: "86400000"
