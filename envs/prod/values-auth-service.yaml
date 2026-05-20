@@ -4,7 +4,7 @@ fullnameOverride: auth-service
 
 image:
   repository: 516209541629.dkr.ecr.us-east-1.amazonaws.com/auth-service
-  tag: v1.0.0
+  tag: sha-ef1ccc7
   pullPolicy: Always
 
 service:
